@@ -213,11 +213,31 @@ export class Metrics {
       });
     });
 
-    for (const metricsReq of awsMetrics.values()) {
-      await expBackOff(() => {
-        return this.cloudwatch.putMetricData(metricsReq).promise();
-      });
+    for (const [i, metricsReq] of awsMetrics.entries()) {
+      try {
+        console.info(
+          `Sending metrics with cloudwatch.putMetricData [LEN: ${metricsReq.MetricData.length} ` +
+            `NS: ${metricsReq.Namespace}] (${i} of ${awsMetrics.length})`,
+        );
+        await expBackOff(async () => {
+          return await this.cloudwatch.putMetricData(metricsReq).promise();
+        });
+        console.info(`Success sending metrics with cloudwatch.putMetricData (${i} of ${awsMetrics.length})`);
+      } catch (e) {
+        console.error(`Error sending metrics with cloudwatch.putMetricData (${i} of ${awsMetrics.length}): ${e}`);
+        throw e;
+      }
     }
+  }
+
+  /* istanbul ignore next */
+  run() {
+    this.countEntry('run.count');
+  }
+
+  /* istanbul ignore next */
+  exception() {
+    this.countEntry('run.exceptions_count');
   }
 
   // GitHub API CALLS
@@ -430,6 +450,60 @@ export class Metrics {
   }
 
   // AWS API CALLS
+  /* istanbul ignore next */
+  sqsSendMessagesBatchSuccess(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.sendMessagesBatch.count`, 1);
+    this.countEntry(`aws.sqs.sendMessagesBatch.success`, 1);
+    this.addEntry(`aws.sqs.sendMessagesBatch.wallclock`, ms);
+  }
+
+  /* istanbul ignore next */
+  sqsSendMessagesBatchFailure(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.sendMessagesBatch.count`, 1);
+    this.countEntry(`aws.sqs.sendMessagesBatch.failure`, 1);
+    this.addEntry(`aws.sqs.sendMessagesBatch.wallclock`, ms);
+  }
+
+  /* istanbul ignore next */
+  sqsChangeMessageVisibilityBatchSuccess(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.changeMessageVisibilityBatch.count`, 1);
+    this.countEntry(`aws.sqs.changeMessageVisibilityBatch.success`, 1);
+    this.addEntry(`aws.sqs.changeMessageVisibilityBatch.wallclock`, ms);
+  }
+
+  /* istanbul ignore next */
+  sqsChangeMessageVisibilityBatchFailure(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.changeMessageVisibilityBatch.count`, 1);
+    this.countEntry(`aws.sqs.changeMessageVisibilityBatch.failure`, 1);
+    this.addEntry(`aws.sqs.changeMessageVisibilityBatch.wallclock`, ms);
+  }
+
+  /* istanbul ignore next */
+  sqsDeleteMessageBatchSuccess(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.sqsDeleteMessageBatch.count`, 1);
+    this.countEntry(`aws.sqs.sqsDeleteMessageBatch.success`, 1);
+    this.addEntry(`aws.sqs.sqsDeleteMessageBatch.wallclock`, ms);
+  }
+
+  /* istanbul ignore next */
+  sqsDeleteMessageBatchFailure(ms: number) {
+    this.countEntry(`aws.calls.total`, 1);
+    this.countEntry(`aws.sqs.calls.total`, 1);
+    this.countEntry(`aws.sqs.sqsDeleteMessageBatch.count`, 1);
+    this.countEntry(`aws.sqs.sqsDeleteMessageBatch.failure`, 1);
+    this.addEntry(`aws.sqs.sqsDeleteMessageBatch.wallclock`, ms);
+  }
+
   /* istanbul ignore next */
   kmsDecryptAWSCallSuccess(ms: number) {
     this.countEntry(`aws.calls.total`, 1);
@@ -658,6 +732,18 @@ export class Metrics {
     this.addEntry(`aws.ec2.perRegion.runInstances.wallclock`, ms, dimensions);
   }
 
+  /* istanbul ignore next */
+  ec2RunInstancesAWSCallException(instanceType: string, awsRegion: string, exceptionName: string, count = 1) {
+    this.countEntry('aws.ec2.runInstances.exception', count);
+    this.countEntry(`aws.ec2.perRegion.runInstances.exception`, count, new Map([['Region', awsRegion]]));
+    this.countEntry(
+      `aws.ec2.perInstancesType.runInstances.exception`,
+      count,
+      new Map([['InstanceType', instanceType]]),
+    );
+    this.countEntry(`aws.ec2.perException.runInstances.exception`, count, new Map([['Exception', exceptionName]]));
+  }
+
   // RUN
   /* istanbul ignore next */
   getRunnerTypesSuccess() {
@@ -688,6 +774,58 @@ export class ScaleUpMetrics extends Metrics {
   /* istanbul ignore next */
   skipRepo(repo: Repo) {
     this.countEntry('run.skip', 1, this.getRepoDim(repo));
+  }
+
+  /* istanbul ignore next */
+  scaleUpSuccess() {
+    this.countEntry('run.scaleup.success');
+  }
+
+  /* istanbul ignore next */
+  stochasticOvershoot() {
+    this.countEntry('run.scaleup.stochasticOvershoot');
+  }
+
+  /* istanbul ignore next */
+  scaleUpFailureRetryable(retries: number) {
+    this.countEntry('run.scaleup.failure.total.count');
+    this.addEntry('run.scaleup.failure.total.retries', retries);
+
+    this.countEntry('run.scaleup.failure.retryable.count');
+    this.addEntry('run.scaleup.failure.retryable.retries', retries);
+  }
+
+  /* istanbul ignore next */
+  scaleUpFailureNonRetryable(retries: number) {
+    this.countEntry('run.scaleup.failure.total.count');
+    this.addEntry('run.scaleup.failure.total.retries', retries);
+
+    this.countEntry('run.scaleup.failure.nonretryable.count');
+    this.addEntry('run.scaleup.failure.nonretryable.retries', retries);
+  }
+
+  /* istanbul ignore next */
+  scaleUpChangeMessageVisibilitySuccess(batchSize: number) {
+    this.countEntry('run.scaleUp.sqs.changeMessageVisibility.success.count');
+    this.addEntry('run.scaleUp.sqs.changeMessageVisibility.success.batchSize', batchSize);
+  }
+
+  /* istanbul ignore next */
+  scaleUpChangeMessageVisibilityFailure(batchSize: number) {
+    this.countEntry('run.scaleUp.sqs.changeMessageVisibility.failure.count');
+    this.addEntry('run.scaleUp.sqs.changeMessageVisibility.failure.batchSize', batchSize);
+  }
+
+  /* istanbul ignore next */
+  scaleUpDeleteMessageSuccess(batchSize: number) {
+    this.countEntry('run.scaleUp.sqs.deleteMessage.success.count');
+    this.addEntry('run.scaleUp.sqs.deleteMessage.success.batchSize', batchSize);
+  }
+
+  /* istanbul ignore next */
+  scaleUpDeleteMessageFailure(batchSize: number) {
+    this.countEntry('run.scaleUp.sqs.deleteMessage.failure.count');
+    this.addEntry('run.scaleUp.sqs.deleteMessage.failure.batchSize', batchSize);
   }
 
   /* istanbul ignore next */
@@ -795,16 +933,6 @@ export class ScaleDownMetrics extends Metrics {
   }
 
   /* istanbul ignore next */
-  run() {
-    this.countEntry('run.count');
-  }
-
-  /* istanbul ignore next */
-  exception() {
-    this.countEntry('run.exceptions_count');
-  }
-
-  /* istanbul ignore next */
   runnerLessMinimumTime(ec2Runner: RunnerInfo) {
     this.countEntry(`run.ec2runners.notMinTime`);
     if (ec2Runner.runnerType !== undefined) {
@@ -824,19 +952,34 @@ export class ScaleDownMetrics extends Metrics {
 
   /* istanbul ignore next */
   runnerFound(ec2Runner: RunnerInfo) {
+    const dimensionsRe = new Map([['Region', ec2Runner.awsRegion]]);
+    const dimensionsRt =
+      ec2Runner.runnerType !== undefined ? new Map([['RunnerType', ec2Runner.runnerType]]) : undefined;
+    const dimensionsAz = ec2Runner.az !== undefined ? new Map([['AvailabilityZone', ec2Runner.az]]) : undefined;
+    const dimensionsAzRt =
+      dimensionsRt !== undefined && dimensionsAz !== undefined
+        ? new Map([...dimensionsRt, ...dimensionsAz])
+        : undefined;
+
     this.countEntry('run.ec2runners.total');
+    this.countEntry('run.ec2runners.perRegion.total', 1, dimensionsRe);
 
-    const dimensions = ec2Runner.runnerType !== undefined ? new Map([['RunnerType', ec2Runner.runnerType]]) : undefined;
-
-    if (dimensions !== undefined) {
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
+    if (dimensionsRt !== undefined) {
+      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensionsRt);
+      this.countEntry('run.ec2runners.perRegion.perRunnerType.total', 1, new Map([...dimensionsRt, ...dimensionsRe]));
+    }
+    if (dimensionsAz !== undefined) {
+      this.countEntry('run.ec2runners.perAvailabilityZone.total', 1, dimensionsAz);
+    }
+    if (dimensionsAzRt !== undefined) {
+      this.countEntry('run.ec2runners.perAvailabilityZone.perRunnerType.total', 1, dimensionsAzRt);
     }
 
     if (ec2Runner.launchTime !== undefined) {
       const tm = (Date.now() - ec2Runner.launchTime.getTime()) / 1000;
       this.addEntry('run.ec2runners.runningWallclock', tm);
-      if (dimensions !== undefined) {
-        this.addEntry('run.ec2runners.perRunnerType.runningWallclock', tm, dimensions);
+      if (dimensionsRt !== undefined) {
+        this.addEntry('run.ec2runners.perRunnerType.runningWallclock', tm, dimensionsRt);
       }
     }
   }
@@ -858,7 +1001,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.found', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.busy', 1, dimensions);
     }
@@ -881,7 +1023,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.found', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.free', 1, dimensions);
     }
@@ -902,7 +1043,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.notFound', 1, dimensions);
     }
   }
@@ -924,7 +1064,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.found', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.busy', 1, dimensions);
     }
@@ -947,7 +1086,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.found', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.free', 1, dimensions);
     }
@@ -968,7 +1106,6 @@ export class ScaleDownMetrics extends Metrics {
 
       dimensions.clear();
       dimensions.set('RunnerType', ec2Runner.runnerType);
-      this.countEntry('run.ec2runners.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ec2runners.perRunnerType.notFound', 1, dimensions);
     }
   }
@@ -1091,6 +1228,42 @@ export class ScaleDownMetrics extends Metrics {
       this.countEntry('run.ghRunner.perRunnerType.total', 1, dimensions);
       this.countEntry('run.ghRunner.perRunnerType.terminate.notfound', 1, dimensions);
     }
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineFoundRepo(repo: Repo, total: number) {
+    const dimensions = this.getRepoDim(repo);
+    this.addEntry('run.ghRunner.perRepo.offline.found', total, dimensions);
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineRemovedRepo(repo: Repo) {
+    const dimensions = this.getRepoDim(repo);
+    this.countEntry('run.ghRunner.perRepo.offline.removed.success', 1, dimensions);
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineRemovedFailureRepo(repo: Repo) {
+    const dimensions = this.getRepoDim(repo);
+    this.countEntry('run.ghRunner.perRepo.offline.removed.failure', 1, dimensions);
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineFoundOrg(org: string, total: number) {
+    const dimensions = new Map([['Org', org]]);
+    this.addEntry('run.ghRunner.perOrg.offline.found', total, dimensions);
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineRemovedOrg(org: string) {
+    const dimensions = new Map([['Org', org]]);
+    this.countEntry('run.ghRunner.perOrg.offline.removed.success', 1, dimensions);
+  }
+
+  /* istanbul ignore next */
+  runnerGhOfflineRemovedFailureOrg(org: string) {
+    const dimensions = new Map([['Org', org]]);
+    this.countEntry('run.ghRunner.perOrg.offline.removed.failure', 1, dimensions);
   }
 
   /* istanbul ignore next */

@@ -12,7 +12,7 @@ inputs:
     description: Miniconda version to install
     required: false
     type: string
-    default: "4.12.0"
+    default: "23.1.0-1"
   environment-file:
     description: Environment file to install dependencies from
     required: false
@@ -27,60 +27,6 @@ inputs:
 runs:
   using: composite
   steps:
-      - name: Get disk space usage and throw an error for low disk space
-        shell: bash
-        run: |
-          echo "Print the available disk space for manual inspection"
-          df -h
-
-          function check_disk_space() {
-            set +e
-
-            # Set the minimum requirement space to 4GB
-            MINIMUM_AVAILABLE_SPACE_IN_GB=4
-            MINIMUM_AVAILABLE_SPACE_IN_KB=$(($MINIMUM_AVAILABLE_SPACE_IN_GB * 1024 * 1024))
-
-            # Use KB to avoid floating point warning like 3.1GB
-            df -k | tr -s ' ' | cut -d' ' -f 4,9 | while read -r LINE;
-            do
-              AVAIL=$(echo $LINE | cut -f1 -d' ')
-              MOUNT=$(echo $LINE | cut -f2 -d' ')
-
-              if [ "${MOUNT}" = "/" ]; then
-                if [ "${AVAIL}" -lt "${MINIMUM_AVAILABLE_SPACE_IN_KB}" ]; then
-                  echo "Failure: There is only ${AVAIL}KB free space left in ${MOUNT}, which is less than the minimum requirement of ${MINIMUM_AVAILABLE_SPACE_IN_KB}KB for ${RUNNER_OS}"
-                else
-                  echo "Success: There is ${AVAIL}KB free space left in ${MOUNT} for ${RUNNER_OS}, continue"
-                fi
-              fi
-            done
-
-            set -e
-          }
-
-          RESULT=$(check_disk_space)
-          echo "${RESULT}"
-
-          if [[ "${RESULT}" == *Failure* && "${RUNNER_OS}" == "macOS" ]]; then
-            # We can clean up /System/Library/Caches/com.apple.coresymbolicationd on MacOS to free up the space and this should free up enough space
-            # https://github.com/pytorch/pytorch/issues/85440
-            sudo rm "/System/Library/Caches/com.apple.coresymbolicationd/data" || true
-            # Stop the daemon and launchctl will automatically start it again, thus accomplish a restart and free up the above file
-            sudo launchctl stop com.apple.coresymbolicationd || true
-
-            echo "Re-run disk space check for ${RUNNER_OS} after cleaning up"
-            # Re-run the check
-            RESULT=$(check_disk_space)
-            echo "${RESULT}"
-          fi
-
-          if [[ "${RESULT}" == *Failure* ]]; then
-            df -h
-
-            echo "Please help create an issue to PyTorch Release Engineering via https://github.com/pytorch/test-infra/issues and provide the link to the workflow run."
-            exit 1
-          fi
-
       # Use the same trick from https://github.com/marketplace/actions/setup-miniconda
       # to refresh the cache daily. This is kind of optional though
       - name: Get date
@@ -127,8 +73,13 @@ runs:
       - name: Update GitHub path to include miniconda install
         shell: bash
         run: |
+          set -x
+
           MINICONDA_INSTALL_PATH="${RUNNER_TEMP}/miniconda"
           echo "${MINICONDA_INSTALL_PATH}/bin" >> $GITHUB_PATH
+          # NB: GITHUB_PATH has a lower priority than PATH, so also set the path
+          # here to make sure that the correct conda is used
+          echo "PATH=${MINICONDA_INSTALL_PATH}/bin:${PATH}" >> $GITHUB_ENV
 
       # When the environment-file or pip-requirements-file inputs are not set or are set to invalid paths, the hashFiles
       # function will return an empty string without failing the step. This works out nicely and we can have a various
@@ -164,19 +115,28 @@ runs:
             echo "::warning::Specified env file (${ENV_FILE}) not found, not going to include it"
           fi
 
-          conda create \
-            --yes \
+          CONDA_EXTRA_FLAGS=""
+          if [[ "${PYTHON_VERSION}" == "3.11" ]]; then
+            CONDA_EXTRA_FLAGS=" -c pytorch-nightly"
+          fi
+
+          # Print the conda we are using here in case we need debugging information
+          CONDA_RUNTIME=$(which conda)
+          "${CONDA_RUNTIME}" --version
+
+          "${CONDA_RUNTIME}" create \
+            --yes --quiet \
             --prefix "${CONDA_BASE_ENV}" \
             ${ENV_FILE_FLAG} \
             python="${PYTHON_VERSION}" \
             cmake=3.22 \
-            conda-build=3.21 \
             ninja=1.10 \
             pkg-config=0.29 \
-            wheel=0.37
+            wheel=0.37 \
+            ${CONDA_EXTRA_FLAGS}
 
           if [[ -f "${PIP_REQUIREMENTS_FILE}" ]]; then
-            conda run -p "${CONDA_BASE_ENV}" --no-capture-output python3 -mpip install -r "${PIP_REQUIREMENTS_FILE}"
+            "${CONDA_RUNTIME}" run -p "${CONDA_BASE_ENV}" --no-capture-output python3 -mpip install -r "${PIP_REQUIREMENTS_FILE}"
           elif [[ -n "${PIP_REQUIREMENTS_FILE}" ]]; then
             echo "::warning::Specified pip requirements file (${PIP_REQUIREMENTS_FILE}) not found, not going to include it"
           fi
@@ -186,18 +146,50 @@ runs:
         env:
           PYTHON_VERSION: ${{ inputs.python-version }}
           CONDA_BASE_ENV: ${{ runner.temp }}/conda-python-${{ inputs.python-version }}
+          PIP_REQUIREMENTS_FILE: ${{ inputs.pip-requirements-file }}
         run: |
+          set -x
+
+          # Print the conda we are using here in case we need debugging information
+          CONDA_RUNTIME=$(which conda)
+          "${CONDA_RUNTIME}" --version
+
           CONDA_ENV="${RUNNER_TEMP}/conda_environment_${GITHUB_RUN_ID}"
-          conda create \
-            --yes \
+          "${CONDA_RUNTIME}" create \
+            --yes --quiet \
             --prefix "${CONDA_ENV}" \
             --clone "${CONDA_BASE_ENV}"
 
-          # TODO: conda-build could not be cloned because it hardcodes the path, so it
-          # could not be cached
-          conda install --yes -p ${CONDA_ENV} conda-build=3.21
+          set +e
+          # NB: Cloning sometimes doesn't copied pip dependencies (untracked files) over. If this
+          # happens, let's attempt to install the pip requirements directly on top of the cloned
+          # environment. This is to make sure that no dependency is missing.
+          UNTRACKED_FILES_COUNT=$("${CONDA_RUNTIME}" package -p "${CONDA_ENV}" -u | grep -v "^#" | wc -l | xargs)
+          set -e
+
+          if [[ -z "${UNTRACKED_FILES_COUNT}" ]] || [[ "${UNTRACKED_FILES_COUNT}" == "0" ]]; then
+            if [[ -f "${PIP_REQUIREMENTS_FILE}" ]]; then
+              # NB: Force reinstall and don't use the cache, as the installation would still fail
+              # when reporting that all requirements have been satisfied
+              "${CONDA_RUNTIME}" run -p "${CONDA_ENV}" --no-capture-output python3 -mpip install --ignore-installed --no-cache-dir -r "${PIP_REQUIREMENTS_FILE}"
+            elif [[ -n "${PIP_REQUIREMENTS_FILE}" ]]; then
+              echo "::warning::Specified pip requirements file (${PIP_REQUIREMENTS_FILE}) not found, not going to include it"
+            fi
+          fi
 
           echo "CONDA_ENV=${CONDA_ENV}" >> "${GITHUB_ENV}"
-          echo "CONDA_RUN=conda run -p ${CONDA_ENV} --no-capture-output" >> "${GITHUB_ENV}"
-          echo "CONDA_BUILD=conda run -p ${CONDA_ENV} conda-build" >> "${GITHUB_ENV}"
-          echo "CONDA_INSTALL=conda install -p ${CONDA_ENV}" >> "${GITHUB_ENV}"
+          echo "CONDA_RUN=${CONDA_RUNTIME} run -p ${CONDA_ENV} --no-capture-output" >> "${GITHUB_ENV}"
+          if [[ "${PYTHON_VERSION}" == "3.11" ]]; then
+            # TODO: Remove me, when more packages will be available on default channel
+            echo "CONDA_INSTALL=${CONDA_RUNTIME} install --yes --quiet -p ${CONDA_ENV} -c pytorch-nightly" >> "${GITHUB_ENV}"
+          else
+            echo "CONDA_INSTALL=${CONDA_RUNTIME} install --yes --quiet -p ${CONDA_ENV}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Reset channel priority
+        shell: bash
+        run: |
+          CONDA_RUNTIME=$(which conda)
+
+          set -euxo pipefail
+          "${CONDA_RUNTIME}" config --set channel_priority false

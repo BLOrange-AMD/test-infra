@@ -98,6 +98,23 @@
   padding: 3px;
 }
 
-.forcedMergeWarning {
+.forcedMerge {
   background-color: lightyellow;
+}
+
+.forcedMergeWithFailure {
+  background-color: #ffe0b3;
+}
+
+.selectedRow {
+  background-color: lightblue;
+  font-weight: bold;
+}
+
+.center {
+  text-align: center;
+}
+
+.highlight {
+  background-color: #ffa;
 }

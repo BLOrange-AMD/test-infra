@@ -1,4 +1,4 @@
-import { getBoolean } from './utils';
+import { getBoolean, shuffleArrayInPlace } from './utils';
 
 export class Config {
   private static _instance: Config | undefined;
@@ -18,13 +18,21 @@ export class Config {
   readonly lambdaTimeout: number;
   readonly launchTemplateNameLinux: string | undefined;
   readonly launchTemplateNameLinuxNvidia: string | undefined;
+  readonly launchTemplateNameLinuxARM64: string | undefined;
   readonly launchTemplateNameWindows: string | undefined;
   readonly launchTemplateVersionLinux: string | undefined;
   readonly launchTemplateVersionLinuxNvidia: string | undefined;
+  readonly launchTemplateVersionLinuxARM64: string | undefined;
   readonly launchTemplateVersionWindows: string | undefined;
+  readonly maxRetryScaleUpRecord: number;
   readonly minAvailableRunners: number;
   readonly minimumRunningTimeInMinutes: number;
   readonly mustHaveIssuesLabels: string[];
+  readonly redisEndpoint: string;
+  readonly redisLogin: string;
+  readonly retryScaleUpRecordDelayS: number;
+  readonly retryScaleUpRecordJitterPct: number;
+  readonly retryScaleUpRecordQueueUrl: string | undefined;
   readonly runnerGroupName: string | undefined;
   readonly runnersExtraLabels: undefined | string;
   readonly scaleConfigRepo: string;
@@ -32,6 +40,9 @@ export class Config {
   readonly secretsManagerSecretsId: string | undefined;
   readonly vpcIdToSecurityGroupIds: Map<string, Array<string>>;
   readonly vpcIdToSubnetIds: Map<string, Array<string>>;
+  readonly subnetIdToVpcId: Map<string, string>;
+  readonly subnetIdToAZ: Map<string, string>;
+  readonly azToSubnetIds: Map<string, Array<string>>;
 
   protected constructor() {
     this.awsRegion = process.env.AWS_REGION || 'us-east-1';
@@ -50,13 +61,18 @@ export class Config {
     this.githubAppClientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
     this.githubAppId = process.env.GITHUB_APP_ID;
     this.kmsKeyId = process.env.KMS_KEY_ID;
+    /* istanbul ignore next */
     this.lambdaTimeout = Number(process.env.LAMBDA_TIMEOUT || '600');
     this.launchTemplateNameLinux = process.env.LAUNCH_TEMPLATE_NAME_LINUX;
     this.launchTemplateNameLinuxNvidia = process.env.LAUNCH_TEMPLATE_NAME_LINUX_NVIDIA;
+    this.launchTemplateNameLinuxARM64 = process.env.LAUNCH_TEMPLATE_NAME_LINUX_ARM64;
     this.launchTemplateNameWindows = process.env.LAUNCH_TEMPLATE_NAME_WINDOWS;
     this.launchTemplateVersionLinux = process.env.LAUNCH_TEMPLATE_VERSION_LINUX;
     this.launchTemplateVersionLinuxNvidia = process.env.LAUNCH_TEMPLATE_VERSION_LINUX_NVIDIA;
+    this.launchTemplateVersionLinuxARM64 = process.env.LAUNCH_TEMPLATE_VERSION_LINUX_ARM64;
     this.launchTemplateVersionWindows = process.env.LAUNCH_TEMPLATE_VERSION_WINDOWS;
+    /* istanbul ignore next */
+    this.maxRetryScaleUpRecord = Number(process.env.MAX_RETRY_SCALEUP_RECORD || '0');
     /* istanbul ignore next */
     const mnAvalRuns = Number(process.env.MIN_AVAILABLE_RUNNERS || '10');
     /* istanbul ignore next */
@@ -67,6 +83,15 @@ export class Config {
     this.minimumRunningTimeInMinutes = mnRunMin > 0 ? mnRunMin : 1;
     /* istanbul ignore next */
     this.mustHaveIssuesLabels = process.env.MUST_HAVE_ISSUES_LABELS?.split(',').filter((w) => w.length > 0) || [];
+    /* istanbul ignore next */
+    this.redisEndpoint = process.env.REDIS_ENDPOINT || '';
+    /* istanbul ignore next */
+    this.redisLogin = process.env.REDIS_LOGIN || '';
+    /* istanbul ignore next */
+    this.retryScaleUpRecordDelayS = Number(process.env.RETRY_SCALE_UP_RECORD_DELAY_S || '0');
+    /* istanbul ignore next */
+    this.retryScaleUpRecordJitterPct = Number(process.env.RETRY_SCALE_UP_RECORD_JITTER_PCT || '0');
+    this.retryScaleUpRecordQueueUrl = process.env.RETRY_SCALE_UP_RECORD_QUEUE_URL;
     this.runnerGroupName = process.env.RUNNER_GROUP_NAME;
     this.runnersExtraLabels = process.env.RUNNER_EXTRA_LABELS;
     /* istanbul ignore next */
@@ -75,6 +100,20 @@ export class Config {
     this.secretsManagerSecretsId = process.env.SECRETSMANAGER_SECRETS_ID;
     this.vpcIdToSecurityGroupIds = this.getMapFromFlatEnv(process.env.VPC_ID_TO_SECURITY_GROUP_IDS);
     this.vpcIdToSubnetIds = this.getMapFromFlatEnv(process.env.VPC_ID_TO_SUBNET_IDS);
+    this.subnetIdToVpcId = new Map();
+    for (const [vpcId, subnetIds] of this.vpcIdToSubnetIds.entries()) {
+      for (const subnetId of subnetIds) {
+        this.subnetIdToVpcId.set(subnetId, vpcId);
+      }
+    }
+
+    this.subnetIdToAZ = this.getSimpleMapFromFlatEnv(process.env.SUBNET_ID_TO_AZ);
+    this.azToSubnetIds = new Map();
+    for (const [subnetId, az] of this.subnetIdToAZ.entries()) {
+      const arr = this.azToSubnetIds.get(az) || [];
+      arr.push(subnetId);
+      this.azToSubnetIds.set(az, arr);
+    }
   }
 
   static get Instance(): Config {
@@ -87,12 +126,7 @@ export class Config {
 
   shuffledVPCsForAwsRegion(awsRegion: string): Array<string> {
     const arr = Array.from(this.awsRegionsToVpcIds.get(awsRegion) || []);
-    return this.shuffleInPlace(arr);
-  }
-
-  shuffledSubnetsForVpcId(vpcId: string): Array<string> {
-    const arr = Array.from(this.vpcIdToSubnetIds.get(vpcId) || []);
-    return this.shuffleInPlace(arr);
+    return shuffleArrayInPlace(arr);
   }
 
   get shuffledAwsRegionInstances(): string[] {
@@ -102,7 +136,7 @@ export class Config {
     } else {
       arr = [...this.awsRegionInstances];
     }
-    return this.shuffleInPlace(arr);
+    return shuffleArrayInPlace(arr);
   }
 
   get ghesUrlApi(): undefined | string {
@@ -115,12 +149,17 @@ export class Config {
     return this.ghesUrl ?? 'https://github.com';
   }
 
-  protected shuffleInPlace<T>(arr: T[]): T[] {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
+  protected getSimpleMapFromFlatEnv(envVar: string | undefined): Map<string, string> {
+    const ret: Map<string, string> = new Map();
+
+    (envVar?.split(',') || []).forEach((entry) => {
+      const split = entry.split('|').filter((w) => w.length > 0);
+      if (split.length == 2) {
+        ret.set(split[0], split[1]);
+      }
+    });
+
+    return ret;
   }
 
   protected getMapFromFlatEnv(envVar: string | undefined): Map<string, Array<string>> {

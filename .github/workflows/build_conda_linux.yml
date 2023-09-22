@@ -39,6 +39,10 @@ on:
         description: "Script for Smoke Test for a specific domain"
         default: ""
         type: string
+      env-var-script:
+        description: "Script that sets Domain-Specific Environment Variables"
+        default: ""
+        type: string
       package-name:
         description: "Name of the actual python package that is imported"
         default: ""
@@ -47,9 +51,20 @@ on:
         description: "Trigger Event in caller that determines whether or not to upload"
         default: ""
         type: string
+      cache-path:
+        description: "The path(s) on the runner to cache or restore. The path is relative to repository."
+        default: ""
+        type: string
+      cache-key:
+        description: "The key created when saving a cache and the key used to search for a cache."
+        default: ""
+        type: string
     secrets:
       CONDA_PYTORCHBOT_TOKEN:
-        description: "Access Token needed to upload binaries to anaconda"
+        description: "Access Token needed to upload binaries to anaconda nightly channel"
+        required: false
+      CONDA_PYTORCHBOT_TOKEN_TEST:
+        description: "Access Token needed to upload binaries to anaconda test channel"
         required: false
 
 jobs:
@@ -66,8 +81,10 @@ jobs:
       CU_VERSION: ${{ matrix.desired_cuda }}
     name: ${{ matrix.build_name }}
     runs-on: ${{ matrix.validation_runner }}
+    environment: ${{(inputs.trigger-event == 'push' || startsWith(github.event.ref, 'refs/tags/')) && 'pytorchbot-env' || ''}}
     container:
       image: ${{ matrix.container_image }}
+      options: ${{ matrix.gpu_arch_type == 'cuda' && '--gpus all' || ' ' }}
     # If a build is taking longer than 60 minutes on these runners we need
     # to have a conversation
     timeout-minutes: 60
@@ -78,63 +95,61 @@ jobs:
           repository: ${{ inputs.test-infra-repository }}
           ref: ${{ inputs.test-infra-ref }}
           path: test-infra
+      - uses: ./test-infra/.github/actions/set-channel
       - uses: ./test-infra/.github/actions/setup-binary-builds
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          setup-miniconda: false
+          setup-miniconda: true
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Run pre-script
+      - name: Combine Env Var and Build Env Files
+        if: ${{ inputs.env-var-script != '' }}
         working-directory: ${{ inputs.repository }}
-        env:
-          PRE_SCRIPT: ${{ inputs.pre-script }}
-        if: ${{ inputs.pre-script != '' }}
         run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${PRE_SCRIPT} ]]; then
-            echo "::error::Specified pre-script file (${PRE_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${PRE_SCRIPT}"
-          fi
+          set -euxo pipefail
+          cat "${{ inputs.env-var-script }}" >> "${BUILD_ENV_FILE}"
+      - name: Run Pre-Script with Caching
+        if: ${{ inputs.pre-script != '' }}
+        uses: ./test-infra/.github/actions/run-script-with-cache
+        with:
+          cache-path: ${{ inputs.cache-path }}
+          cache-key: ${{ inputs.cache-key }}
+          repository: ${{ inputs.repository  }}
+          script: ${{ inputs.pre-script }}
       - name: Setup base environment variables
         run: |
+          set -euxo pipefail
           echo "SOURCE_ROOT_DIR=${GITHUB_WORKSPACE}/${REPOSITORY}" >> "${GITHUB_ENV}"
       - name: Build the conda (conda-build)
         working-directory: ${{ inputs.repository }}
         env:
           CUDATOOLKIT_CHANNEL: ${{ env.CUDATOOLKIT_CHANNEL }}
         run: |
+          set -euxo pipefail
+          # shellcheck disable=SC1090
           source "${BUILD_ENV_FILE}"
-          export FFMPEG_ROOT="${PWD}"/third_party/ffmpeg
-          export USE_FFMPEG="1"
+
           ${CONDA_RUN} conda build \
             -c defaults \
             -c "${CUDATOOLKIT_CHANNEL}" \
             -c "pytorch-${CHANNEL}" \
             --no-anaconda-upload \
             --python "${PYTHON_VERSION}" \
-            --output-folder dist/ \
+            --output-folder distr/ \
             "${CONDA_PACKAGE_DIRECTORY}"
+
       - name: Upload artifact to GitHub
         continue-on-error: true
         uses: actions/upload-artifact@v3
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ inputs.repository }}/dist/
-      - name: Run post-script
-        working-directory: ${{ inputs.repository }}
-        env:
-          POST_SCRIPT: ${{ inputs.post-script }}
+          path: ${{ inputs.repository }}/distr/
+      - name: Run Post-Script
         if: ${{ inputs.post-script != '' }}
-        run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${POST_SCRIPT} ]]; then
-            echo "::error::Specified post-script file (${POST_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${POST_SCRIPT}"
-          fi
+        uses: ./test-infra/.github/actions/run-script-with-cache
+        with:
+          repository: ${{ inputs.repository  }}
+          script: ${{ inputs.post-script }}
       - name: Smoke Test
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
@@ -143,47 +158,62 @@ jobs:
           DESIRED_CUDA: ${{ matrix.desired_cuda }}
           GPU_ARCH_VERSION: ${{ matrix.gpu_arch_version }}
         run: |
-          set -ex
+          set -euxo pipefail
+          # shellcheck disable=SC1090
           source "${BUILD_ENV_FILE}"
-          CONDA_OUTPUT_PATH="${{ inputs.repository }}/dist/linux-64/"
-          echo "$CONDA_OUTPUT_PATH"
-          BINARY_NAME=$(ls "$CONDA_OUTPUT_PATH"/*.tar.bz2)
-          echo "$BINARY_NAME"
-          if [[ "${GPU_ARCH}" = "cpu" ]]; then
-            ${CONDA_RUN} conda install -v -y -c pytorch-"${CHANNEL}" pytorch
-          elif [[ "${GPU_ARCH}" = "cuda" && ("${DESIRED_CUDA}" = "cu116" || "${DESIRED_CUDA}" = "cu117") ]]; then
-            ${CONDA_RUN} conda install -v -y -c pytorch-"${CHANNEL}" -c nvidia pytorch pytorch-cuda="${GPU_ARCH_VERSION}"
-          elif [[ "${GPU_ARCH}" = "cuda" ]]; then
-            conda install -v -y -c pytorch-"${CHANNEL}" pytorch cudatoolkit="${GPU_ARCH_VERSION}"
+          CONDA_LOCAL_CHANNEL="file://$(readlink -f ${{ inputs.repository }}/distr)"
+
+          export CONDA_ENV_SMOKE="${RUNNER_TEMP}/pytorch_pkg_helpers_${GITHUB_RUN_ID}_smoke"
+          conda create --yes --quiet --prefix "${CONDA_ENV_SMOKE}" python="${PYTHON_VERSION}"
+          export CONDA_RUN_SMOKE="conda run -p ${CONDA_ENV_SMOKE}"
+
+          if [[ "${GPU_ARCH}" = "cuda" ]]; then
+            CONSTRAINTS="pytorch-cuda=${GPU_ARCH_VERSION}"
           else
-            ${CONDA_RUN} conda install -v -y -c pytorch-"${CHANNEL}" pytorch
+            CONSTRAINTS="cpuonly"
           fi
-          if [[ "${{ inputs.package-name }}" = "torchvision" ]]; then
-              ${CONDA_RUN} conda install -y 'numpy>=1.11'
-              ${CONDA_RUN} conda install pillow
-          fi
-          ${CONDA_RUN} conda install "$BINARY_NAME"
+
+          ${CONDA_RUN_SMOKE} conda install \
+            --yes \
+            --quiet \
+            -c pytorch-"${CHANNEL}" \
+            -c nvidia \
+            -c "${CONDA_LOCAL_CHANNEL}" \
+            distr::"${PACKAGE_NAME}" \
+            ${CONSTRAINTS}
 
           if [[ ! -f "${{ inputs.repository }}"/${SMOKE_TEST_SCRIPT} ]]; then
             echo "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT} not found"
-            ${CONDA_RUN} python3 -c "import ${PACKAGE_NAME}; print('package version is ', ${PACKAGE_NAME}.__version__)"
+            ${CONDA_RUN_SMOKE} python3 -c "import ${PACKAGE_NAME}; print('package version is ', ${PACKAGE_NAME}.__version__)"
           else
             echo "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT} found"
-            export LD_LIBRARY_PATH="{LD_LIBRARY_PATH}:${{ inputs.repository }}/third_party/ffmpeg/lib"
-            conda install 'ffmpeg<5'
-            ${CONDA_RUN} python "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT}"
+            ${CONDA_RUN_SMOKE} python "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT}"
           fi
+          conda env remove -p "${CONDA_ENV_SMOKE}"
       - name: Upload package to conda
-        if: ${{ inputs.trigger-event == 'push' }}
+        if: ${{ (inputs.trigger-event == 'push' && env.CHANNEL != 'test') || (env.CHANNEL == 'test' && startsWith(github.event.ref, 'refs/tags/')) }}
         working-directory: ${{ inputs.repository }}
         env:
           CONDA_PYTORCHBOT_TOKEN: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
+          CONDA_PYTORCHBOT_TOKEN_TEST: ${{ secrets.CONDA_PYTORCHBOT_TOKEN_TEST }}
         run: |
+          if [[ "${CHANNEL}" = "nightly" ]]; then
+            export CONDA_TOKEN="${CONDA_PYTORCHBOT_TOKEN}"
+          else
+            export CONDA_TOKEN="${CONDA_PYTORCHBOT_TOKEN_TEST}"
+          fi
+
+          set -euxo pipefail
+          # shellcheck disable=SC1090
           source "${BUILD_ENV_FILE}"
-          set -x
-          conda create --yes -n upload_env python="${PYTHON_VERSION}"
-          conda run -n upload_env conda install -yq anaconda-client
-          conda run -n upload_env anaconda -t "${CONDA_PYTORCHBOT_TOKEN}" upload dist/linux-64/*.tar.bz2 -u "pytorch-${CHANNEL}" --label main --no-progress --force
+          ${CONDA_RUN} conda install --yes --quiet anaconda-client
+          ${CONDA_RUN} anaconda \
+            -t "${CONDA_TOKEN}" \
+            upload distr/linux-64/*.tar.bz2 \
+            -u "pytorch-${CHANNEL}" \
+            --label main \
+            --no-progress \
+            --force
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ inputs.repository }}-${{ github.event_name == 'workflow_dispatch' }}

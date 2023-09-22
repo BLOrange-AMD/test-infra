@@ -40,30 +40,34 @@ const merge = commands.add_parser("merge", {
   add_help: false,
 });
 const mergeOption = merge.add_mutually_exclusive_group();
-mergeOption.add_argument("-g", "--green", {
-  action: "store_true",
-  help: "Merge when all status checks running on the PR pass. To add status checks, use labels like `ciflow/trunk`.",
-});
 mergeOption.add_argument("-f", "--force", {
   metavar: "MESSAGE",
-  help: `Merge without checking anything. This requires a reason for auditting purpose, for example:
-@pytorchbot merge -f 'Minor update to fix lint. Expecting all PR tests to pass'`,
-});
-mergeOption.add_argument("-l", "--land-checks", {
-  action: "store_true",
   help:
-    "[Deprecated - your PR instead now gets the `ciflow/trunk` label on approval] Merge with land " +
-    "time checks. This will create a new branch with your changes rebased " +
-    "on viable/strict and run a majority of trunk tests _before_ landing to increase trunk " +
-    "reliability and decrease risk of revert. The tests added are: pull, Lint and trunk. Note " +
-    "that periodic is excluded.",
+    `Merge without checking anything. This requires a reason for auditting purpose, for example:
+@pytorchbot merge -f 'Minor update to fix lint. Expecting all PR tests to pass'` +
+    "\n\n" +
+    "Please use `-f` as last resort, prefer `--ignore-current` to continue the merge ignoring current failures. " +
+    "This will allow currently pending tests to finish and report signal before the merge.",
+});
+mergeOption.add_argument("-i", "--ignore-current", {
+  action: "store_true",
+  help: "Merge while ignoring the currently failing jobs.  Behaves like -f if there are no pending jobs.",
+});
+merge.add_argument("-ic", {
+  action: "store_true",
+  help: "Old flag for --ignore-current. Deprecated in favor of -i.",
 });
 merge.add_argument("-r", "--rebase", {
-  help: "Rebase the PR to re run checks before merging.  Accepts viable/strict or master as branch options and " +
-  "will default to viable/strict if not specified.",
+  help:
+    "Rebase the PR to re run checks before merging.  Accepts viable/strict or main as branch options and " +
+    "will default to viable/strict if not specified.",
   nargs: "?",
   const: "viable/strict",
-  choices: ["viable/strict", "master"],
+  choices: ["viable/strict", "main"],
+});
+merge.add_argument("-h", "--help", {
+  action: "store_true",
+  help: SUPPRESS,
 });
 
 // Revert
@@ -86,13 +90,17 @@ revert.add_argument("-c", "--classification", {
   choices: Object.keys(revertClassifications),
   help: "A machine-friendly classification of the revert reason.",
 });
+revert.add_argument("-h", "--help", {
+  action: "store_true",
+  help: SUPPRESS,
+});
 
 // Rebase
 const rebase = commands.add_parser("rebase", {
   help: "Rebase a PR",
   description:
     "Rebase a PR. Rebasing defaults to the stable viable/strict branch of pytorch.\n" +
-    "You must have write permissions to the repo to rebase a PR.",
+    "Repeat contributor may use this command to rebase their PR.",
   formatter_class: RawTextHelpFormatter,
   add_help: false,
 });
@@ -103,6 +111,10 @@ branch_selection.add_argument("-s", "--stable", {
 });
 branch_selection.add_argument("-b", "--branch", {
   help: "Branch you would like to rebase to",
+});
+rebase.add_argument("-h", "--help", {
+  action: "store_true",
+  help: SUPPRESS,
 });
 
 const label = commands.add_parser("label", {
@@ -116,15 +128,23 @@ label.add_argument("labels", {
   nargs: "+",
   help: "Labels to add to given Pull Request",
 });
+label.add_argument("-h", "--help", {
+  action: "store_true",
+  help: SUPPRESS,
+});
 
 // Dr. CI
 const drCi = commands.add_parser("drci", {
   help: "Update Dr. CI",
   description:
-    "Update Dr. CI. Updates the Dr. CI comment on the PR in case it's gotten out of sync " + 
+    "Update Dr. CI. Updates the Dr. CI comment on the PR in case it's gotten out of sync " +
     "with actual CI results.",
   formatter_class: RawTextHelpFormatter,
   add_help: false,
+});
+drCi.add_argument("-h", "--help", {
+  action: "store_true",
+  help: SUPPRESS,
 });
 
 // Help

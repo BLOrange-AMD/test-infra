@@ -12809,6 +12809,7 @@ var dist_node = __nccwpck_require__(5375);
 async function run() {
     var _a;
     try {
+        core.info('Please see https://github.com/pytorch/pytorch/wiki/Debugging-using-with-ssh-for-Github-Actions for more info.');
         const activateWithLabel = core.getBooleanInput('activate-with-label');
         const sshLabel = core.getInput('label');
         const github_token = core.getInput('github-secret');
@@ -12863,7 +12864,9 @@ async function run() {
             const username = external_os_default().userInfo().username;
             core.info(`Login using: ssh ${username}@${hostname}`);
             if (instructions) {
-                core.info(instructions.replace('%%hostname%%', hostname).replace('%%username%%', username));
+                core.info(instructions
+                    .replace('%%hostname%%', hostname)
+                    .replace('%%username%%', username));
             }
             // Return early if we can get the right keys on the first try
             return;

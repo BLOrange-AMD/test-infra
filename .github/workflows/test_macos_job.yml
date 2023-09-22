@@ -16,7 +16,7 @@ jobs:
       test-infra-repository: ${{ github.repository }}
       test-infra-ref: ${{ github.ref }}
       script: |
-        conda create -y -n test python=3.8
+        conda create --yes --quiet -n test python=3.8
         conda activate test
         python3 -m pip install --extra-index-url https://download.pytorch.org/whl/nightly/cpu --pre torch
         # Can import pytorch
@@ -28,9 +28,10 @@ jobs:
       runner: macos-m1-12
       test-infra-repository: ${{ github.repository }}
       test-infra-ref: ${{ github.ref }}
+      submodules: ${{ 'true' }}
       timeout: 60
       script: |
-        conda create -y -n test python=3.8
+        conda create --yes --quiet -n test python=3.8
         conda activate test
         python3 -m pip install --extra-index-url https://download.pytorch.org/whl/nightly/cpu --pre torch
         # Can import pytorch, cuda is available
@@ -45,7 +46,7 @@ jobs:
       repository: pytorch/vision
       ref: main
       script: |
-        conda create -y -n test python=3.8
+        conda create --yes --quiet -n test python=3.8
         conda activate test
         python3 -m pip install --extra-index-url https://download.pytorch.org/whl/nightly/cpu --pre torch
         # Can import pytorch
@@ -58,10 +59,11 @@ jobs:
       test-infra-repository: ${{ github.repository }}
       test-infra-ref: ${{ github.ref }}
       repository: pytorch/vision
+      submodules: "recursive"
       ref: main
       timeout: 60
       script: |
-        conda create -y -n test python=3.8
+        conda create --yes --quiet -n test python=3.8
         conda activate test
         python3 -m pip install --extra-index-url https://download.pytorch.org/whl/nightly/cpu --pre torch
         # Can import pytorch, cuda is available

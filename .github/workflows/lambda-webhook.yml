@@ -11,13 +11,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: node:12
+    container: node:14
     defaults:
       run:
         working-directory: terraform-aws-github-runner/modules/webhook/lambdas/webhook
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install dependencies
         run: yarn install
       - name: Run linter

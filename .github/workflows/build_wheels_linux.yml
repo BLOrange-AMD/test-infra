@@ -35,6 +35,10 @@ on:
         description: "Script for Smoke Test for a specific domain"
         default: ""
         type: string
+      env-var-script:
+        description: "Script that sets Domain-Specific Environment Variables"
+        default: ""
+        type: string
       package-name:
         description: "Name of the actual python package that is imported"
         default: ""
@@ -43,6 +47,24 @@ on:
         description: "Trigger Event in caller that determines whether or not to upload"
         default: ""
         type: string
+      cache-path:
+        description: "The path(s) on the runner to cache or restore. The path is relative to repository."
+        default: ""
+        type: string
+      cache-key:
+        description: "The key created when saving a cache and the key used to search for a cache."
+        default: ""
+        type: string
+      architecture:
+        description: Architecture to build for x86_64 for default Linux, or aarch64 for Linux aarch64 builds
+        required: false
+        type: string
+        default: x86_64
+      setup-miniconda:
+        description: Works as stated in actions/checkout, but the default value is recursive
+        required: false
+        type: boolean
+        default: true
     secrets:
       AWS_PYTORCH_UPLOADER_ACCESS_KEY_ID:
         description: "AWS Access Key passed from caller workflow"
@@ -63,59 +85,98 @@ jobs:
       REF: ${{ inputs.ref }}
       CU_VERSION: ${{ matrix.desired_cuda }}
       UPLOAD_TO_BASE_BUCKET: ${{ matrix.upload_to_base_bucket }}
+      ARCH: ${{ inputs.architecture }}
     name: ${{ matrix.build_name }}
     runs-on: ${{ matrix.validation_runner }}
+    environment: ${{(inputs.trigger-event == 'push' || startsWith(github.event.ref, 'refs/tags/')) && 'pytorchbot-env' || ''}}
     container:
       image: ${{ matrix.container_image }}
+      options: ${{ matrix.gpu_arch_type == 'cuda' && '--gpus all' || ' ' }}
     # If a build is taking longer than 60 minutes on these runners we need
     # to have a conversation
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
+      - name: Clean workspace
+        shell: bash -l {0}
+        run: |
+          set -euxo pipefail
+          echo "::group::Cleanup debug output"
+          rm -rf "${GITHUB_WORKSPACE}"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+          if [[ "${{ inputs.architecture }}" = "aarch64" ]]; then
+            rm -rf "${RUNNER_TEMP}/*"
+          fi
+
+          echo "::endgroup::"
       - uses: actions/checkout@v3
         with:
           # Support the use case where we need to checkout someone's fork
           repository: ${{ inputs.test-infra-repository }}
           ref: ${{ inputs.test-infra-ref }}
           path: test-infra
+      - uses: actions/checkout@v3
+        if: ${{ env.ARCH == 'aarch64' }}
+        with:
+          # Support the use case where we need to checkout someone's fork
+          repository: "pytorch/builder"
+          ref: "main"
+          path: builder
+      - name: Set linux aarch64 CI
+        if: ${{ inputs.architecture == 'aarch64' }}
+        shell: bash -l {0}
+        env:
+          DESIRED_PYTHON: ${{ matrix.python_version }}
+        run: |
+          set +e
+          # TODO: This is temporary aarch64 setup script, this should be integrated into aarch64 docker.
+          ${GITHUB_WORKSPACE}/builder/aarch64_linux/aarch64_ci_setup.sh
+          echo "/opt/conda/bin" >> $GITHUB_PATH
+          set -e
+      - uses: ./test-infra/.github/actions/set-channel
       - uses: ./test-infra/.github/actions/setup-binary-builds
+        env:
+          PLATFORM: ${{ inputs.architecture == 'aarch64'  && 'linux-aarch64' || ''}}
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          setup-miniconda: true
+          setup-miniconda: ${{ inputs.setup-miniconda }}
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Combine Env Var and Build Env Files
+        if: ${{ inputs.env-var-script != '' }}
+        working-directory: ${{ inputs.repository }}
+        run: |
+          set -euxo pipefail
+          cat "${{ inputs.env-var-script }}" >> "${BUILD_ENV_FILE}"
       - name: Install torch dependency
         run: |
+          set -euxo pipefail
+          # shellcheck disable=SC1090
           source "${BUILD_ENV_FILE}"
-          set -ex
           # shellcheck disable=SC2086
           ${CONDA_RUN} ${PIP_INSTALL_TORCH}
-      - name: Run pre-script
-        working-directory: ${{ inputs.repository }}
-        env:
-          PRE_SCRIPT: ${{ inputs.pre-script }}
+      - name: Run Pre-Script with Caching
         if: ${{ inputs.pre-script != '' }}
-        shell: bash -l {0}
-        run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${PRE_SCRIPT} ]]; then
-            echo "::error::Specified pre-script file (${PRE_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${PRE_SCRIPT}"
-          fi
+        uses: ./test-infra/.github/actions/run-script-with-cache
+        with:
+          cache-path: ${{ inputs.cache-path }}
+          cache-key: ${{ inputs.cache-key }}
+          repository: ${{ inputs.repository  }}
+          script: ${{ inputs.pre-script }}
       - name: Build clean
         working-directory: ${{ inputs.repository }}
         shell: bash -l {0}
         run: |
+          set -euxo pipefail
           source "${BUILD_ENV_FILE}"
           ${CONDA_RUN} python setup.py clean
       - name: Build the wheel (bdist_wheel)
         working-directory: ${{ inputs.repository }}
         shell: bash -l {0}
         run: |
+          set -euxo pipefail
           source "${BUILD_ENV_FILE}"
-          export FFMPEG_ROOT="${PWD}"/third_party/ffmpeg
-          export USE_FFMPEG="1"
+          export PYTORCH_VERSION="$(${CONDA_RUN} pip show torch | grep ^Version: | sed 's/Version:  *//' | sed 's/+.\+//')"
           ${CONDA_RUN} python setup.py bdist_wheel
       - name: Upload wheel to GitHub
         continue-on-error: true
@@ -123,30 +184,32 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ inputs.repository }}/dist/
-      - name: Run post-script
-        working-directory: ${{ inputs.repository }}
-        env:
-          POST_SCRIPT: ${{ inputs.post-script }}
+      - name: Run Post-Script
         if: ${{ inputs.post-script != '' }}
-        shell: bash -l {0}
-        run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${POST_SCRIPT} ]]; then
-            echo "::error::Specified post-script file (${POST_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${POST_SCRIPT}"
-          fi
+        uses: ./test-infra/.github/actions/run-script-with-cache
+        with:
+          repository: ${{ inputs.repository  }}
+          script: ${{ inputs.post-script }}
       - name: Smoke Test
         shell: bash -l {0}
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
           SMOKE_TEST_SCRIPT: ${{ inputs.smoke-test-script }}
         run: |
+          set -euxo pipefail
           source "${BUILD_ENV_FILE}"
           WHEEL_NAME=$(ls "${{ inputs.repository }}/dist/")
           echo "$WHEEL_NAME"
+
           ${CONDA_RUN} pip install "${{ inputs.repository }}/dist/$WHEEL_NAME"
+          # Checking that we have a pinned version of torch in our dependency tree
+          (
+            pushd "${RUNNER_TEMP}"
+            unzip -o "${GITHUB_WORKSPACE}/${{ inputs.repository }}/dist/$WHEEL_NAME"
+            # Ensure that pytorch version is pinned, should output file where it was found
+            grep "Requires-Dist: torch (==.*)" -r .
+          )
+
           if [[ (! -f "${{ inputs.repository }}"/${SMOKE_TEST_SCRIPT}) ]]; then
             echo "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT} not found"
             if [[ "${PACKAGE_NAME}" = "torchrec" ]]; then
@@ -159,17 +222,17 @@ jobs:
             fi
           else
             echo "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT} found"
-            export LD_LIBRARY_PATH="{LD_LIBRARY_PATH}:${{ inputs.repository }}/third_party/ffmpeg/lib"
             ${CONDA_RUN} python "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT}"
           fi
       - name: Upload package to pytorch.org
-        if: ${{ inputs.trigger-event == 'push' }}
+        if: ${{ (inputs.trigger-event == 'push' && startsWith(github.event.ref, 'refs/heads/nightly')) || (env.CHANNEL == 'test' && startsWith(github.event.ref, 'refs/tags/')) }}
         shell: bash -l {0}
         working-directory: ${{ inputs.repository }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_PYTORCH_UPLOADER_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PYTORCH_UPLOADER_SECRET_ACCESS_KEY }}
         run: |
+          set -euxo pipefail
           source "${BUILD_ENV_FILE}"
           ${CONDA_RUN} pip install awscli
           for pkg in dist/*; do

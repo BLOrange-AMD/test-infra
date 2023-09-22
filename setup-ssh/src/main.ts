@@ -14,6 +14,9 @@ install()
 
 async function run(): Promise<void> {
   try {
+    core.info(
+      'Please see https://github.com/pytorch/pytorch/wiki/Debugging-using-with-ssh-for-Github-Actions for more info.'
+    )
     const activateWithLabel: boolean = core.getBooleanInput(
       'activate-with-label'
     )
@@ -80,7 +83,11 @@ async function run(): Promise<void> {
       const username = os.userInfo().username
       core.info(`Login using: ssh ${username}@${hostname}`)
       if (instructions) {
-        core.info(instructions.replace('%%hostname%%', hostname).replace('%%username%%', username))
+        core.info(
+          instructions
+            .replace('%%hostname%%', hostname)
+            .replace('%%username%%', username)
+        )
       }
       // Return early if we can get the right keys on the first try
       return

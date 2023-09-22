@@ -27,6 +27,16 @@ on:
         description: 'Repository to checkout, defaults to ""'
         default: ""
         type: string
+      fetch-depth:
+        description: 'Number of commits to fetch, defaults to 1 similar to actions/checkout'
+        default: 1
+        type: number
+      submodules:
+        description:
+          Same as actions/checkout, set to `true` to checkout submodules or `recursive` to
+          recursively checkout everything
+        default: ""
+        type: string
       ref:
         description: 'Reference to checkout, defaults to "nightly"'
         default: ""
@@ -47,6 +57,19 @@ on:
         description: "Prevents a job from failing when a step fails. Set to true to allow a job to pass when exec script step fails."
         default: false
         type: boolean
+      binary-matrix:
+        description: "If we are calling this workflow with binary build matrix entry, will initialize matrix entries and env vars"
+        required: false
+        default: ''
+        type: string
+      gpu-arch-type:
+        description: "GPU arch type to use"
+        default: "cpu"
+        type: string
+      gpu-arch-version:
+        description: "GPU arch version to use"
+        default: ""
+        type: string
 
 jobs:
   job:
@@ -88,6 +111,8 @@ jobs:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
           path: ${{ inputs.repository || github.repository }}
+          fetch-depth: ${{ inputs.fetch-depth }}
+          submodules: ${{ inputs.submodules }}
 
       - name: Download artifacts (if any)
         uses: actions/download-artifact@v3
@@ -96,11 +121,19 @@ jobs:
           name: ${{ inputs.download-artifact }}
           path: ${{ runner.temp }}/artifacts/
 
+      - name: Export matrix variables (if any)
+        uses: ./test-infra/.github/actions/export-matrix-variables
+        if: ${{ inputs.binary-matrix != '' }}
+        with:
+          binary-matrix: ${{ inputs.binary-matrix }}
+          target-os: "windows"
+
       - name: Run script
         shell: bash -l {0}
         continue-on-error: ${{ inputs.continue-on-error }}
         working-directory: ${{ inputs.repository }}
         run: |
+          EXEC_SCRIPT="${RUNNER_TEMP}/exec_script"
           {
             echo "#!/usr/bin/env bash";
             echo "set -eou pipefail";
@@ -109,9 +142,27 @@ jobs:
             echo "/c/Jenkins/Miniconda3/python.exe -m pip install --upgrade pywin32==300"
             # Source conda so it's available to the script environment
             echo "source /c/Jenkins/Miniconda3/etc/profile.d/conda.sh";
-            echo "${SCRIPT}";
-          } > "${RUNNER_TEMP}/exec_script"
-          bash "${RUNNER_TEMP}/exec_script"
+            echo 'export PATH="/c/Jenkins/Miniconda3/Scripts:${PATH}"'
+          } > "${EXEC_SCRIPT}"
+          if [[ ${{ inputs.gpu-arch-type }} == cuda ]]; then
+            {
+              echo 'export CUDA_HOME="/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v${{ inputs.gpu-arch-version }}"'
+              echo 'export CUDA_PATH="${CUDA_HOME}"'
+              echo 'export PATH="${CUDA_PATH}/bin:${PATH}"'
+            } >> "${EXEC_SCRIPT}"
+          fi
+          echo "${SCRIPT}" >> "${EXEC_SCRIPT}"
+          while read line; do
+            eval "export ${line}"
+          done < "${RUNNER_TEMP}/github_env_${GITHUB_RUN_ID}"
+          bash "${EXEC_SCRIPT}"
+
+      - name: Surface failing tests
+        if: always()
+        uses: pmeier/pytest-results-action@v0.3.0
+        with:
+          path: ${{ env.RUNNER_TEST_RESULTS_DIR }}
+          fail-on-empty: false
 
       - name: Check if there are potential artifacts and move them to the correct artifact location
         shell: bash -l {0}

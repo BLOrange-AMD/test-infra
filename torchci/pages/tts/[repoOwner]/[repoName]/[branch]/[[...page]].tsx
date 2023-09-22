@@ -3,18 +3,7 @@ import ReactECharts from "echarts-for-react";
 import { EChartsOption } from "echarts";
 import useSWR from "swr";
 import _ from "lodash";
-import {
-  FormControl,
-  Grid,
-  InputLabel,
-  MenuItem,
-  Paper,
-  Select,
-  SelectChangeEvent,
-  Skeleton,
-  Stack,
-  Typography,
-} from "@mui/material";
+import { Grid, Paper, Skeleton, Stack, Typography } from "@mui/material";
 import { useRouter } from "next/router";
 import { useCallback, useRef, useState } from "react";
 import { RocksetParam } from "lib/rockset";
@@ -25,8 +14,10 @@ import {
   seriesWithInterpolatedTimes,
 } from "components/metrics/panels/TimeSeriesPanel";
 import { durationDisplay } from "components/TimeUtils";
+import GranularityPicker from "components/GranularityPicker";
 import React from "react";
 import { TimeRangePicker, TtsPercentilePicker } from "../../../../metrics";
+import styles from "components/hud.module.css";
 
 const SUPPORTED_WORKFLOWS = [
   "pull",
@@ -90,6 +81,8 @@ function Graphs({
   selectedJobName,
   checkboxRef,
   branchName,
+  filter,
+  toggleFilter,
 }: {
   queryParams: RocksetParam[];
   granularity: Granularity;
@@ -97,8 +90,9 @@ function Graphs({
   selectedJobName: string;
   checkboxRef: any;
   branchName: string;
+  filter: any;
+  toggleFilter: any;
 }) {
-  const [filter, setFilter] = useState(new Set());
   const ROW_HEIGHT = 800;
 
   let queryName = "tts_duration_historical_percentile";
@@ -137,16 +131,6 @@ function Graphs({
     return <Skeleton variant={"rectangular"} height={"100%"} />;
   }
 
-  function toggleFilter(e: any) {
-    var jobName = e.target.id;
-    const next = new Set(filter);
-    if (filter.has(jobName)) {
-      next.delete(jobName);
-    } else {
-      next.add(jobName);
-    }
-    setFilter(next);
-  }
   let startTime = queryParams.find((p) => p.name === "startTime")?.value;
   let stopTime = queryParams.find((p) => p.name === "stopTime")?.value;
 
@@ -199,7 +183,10 @@ function Graphs({
           ref={checkboxRef}
         >
           {tts_true_series.map((job) => (
-            <div key={job["name"]}>
+            <div
+              key={job["name"]}
+              className={filter.has(job["name"]) ? styles.selectedRow : ""}
+            >
               <input
                 type="checkbox"
                 id={job["name"]}
@@ -219,35 +206,6 @@ function Graphs({
   );
 }
 
-function GranularityPicker({
-  granularity,
-  setGranularity,
-}: {
-  granularity: string;
-  setGranularity: any;
-}) {
-  function handleChange(e: SelectChangeEvent<string>) {
-    setGranularity(e.target.value);
-  }
-  return (
-    <FormControl>
-      <InputLabel id="granularity-select-label">Granularity</InputLabel>
-      <Select
-        value={granularity}
-        label="Granularity"
-        labelId="granularity-select-label"
-        onChange={handleChange}
-      >
-        <MenuItem value={"month"}>month</MenuItem>
-        <MenuItem value={"week"}>week</MenuItem>
-        <MenuItem value={"day"}>day</MenuItem>
-        <MenuItem value={"hour"}>hour</MenuItem>
-        <MenuItem value={"minute"}>minute (no interpolation)</MenuItem>
-      </Select>
-    </FormControl>
-  );
-}
-
 export default function Page() {
   const router = useRouter();
   const branch: string = (router.query.branch as string) ?? "master";
@@ -259,8 +217,21 @@ export default function Page() {
 
   const [startTime, setStartTime] = useState(dayjs().subtract(1, "week"));
   const [stopTime, setStopTime] = useState(dayjs());
+  const [timeRange, setTimeRange] = useState<number>(7);
   const [granularity, setGranularity] = useState<Granularity>("day");
   const [ttsPercentile, setTtsPercentile] = useState<number>(percentile);
+
+  const [filter, setFilter] = useState(new Set());
+  function toggleFilter(e: any) {
+    var jobName = e.target.id;
+    const next = new Set(filter);
+    if (filter.has(jobName)) {
+      next.delete(jobName);
+    } else {
+      next.add(jobName);
+    }
+    setFilter(next);
+  }
 
   const queryParams: RocksetParam[] = [
     {
@@ -315,9 +286,11 @@ export default function Page() {
         </Typography>
         <TimeRangePicker
           startTime={startTime}
-          stopTime={stopTime}
           setStartTime={setStartTime}
+          stopTime={stopTime}
           setStopTime={setStopTime}
+          timeRange={timeRange}
+          setTimeRange={setTimeRange}
         />
         <GranularityPicker
           granularity={granularity}
@@ -335,6 +308,8 @@ export default function Page() {
         selectedJobName={jobName}
         checkboxRef={checkboxRef}
         branchName={branch}
+        filter={filter}
+        toggleFilter={toggleFilter}
       />
     </div>
   );

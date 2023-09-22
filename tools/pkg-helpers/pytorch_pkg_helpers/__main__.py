@@ -42,7 +42,10 @@ def parse_args() -> argparse.Namespace:
         "--platform",
         help="Platform to generate for",
         type=str,
-        default=sys.platform,
+        default= (
+            sys.platform if os.getenv("PLATFORM", sys.platform) == ""
+            else os.getenv("PLATFORM", sys.platform)
+            ),
     )
     parser.add_argument(
         "--gpu-arch-version",
@@ -117,7 +120,7 @@ def main():
         )
 
     if options.platform == "darwin":
-        variables.extend(get_macos_variables(options.arch_name))
+        variables.extend(get_macos_variables(options.arch_name, options.python_version))
 
     variables.extend(
         get_cuda_variables(

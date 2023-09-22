@@ -1,12 +1,16 @@
-name: github-status-test-lambda.yml
+name: Deploy github-status-test
 
 on:
   push:
     branches:
       - main
     paths:
-      - .github/workflows/github-status-test-lambda.yml
-      - aws/lambda/github-status-test/**
+      - ".github/workflows/github-status-test-lambda.yml"
+      - "aws/lambda/github-status-test/**"
+  pull_request:
+    paths:
+      - ".github/workflows/github-status-test-lambda.yml"
+      - "aws/lambda/github-status-test/**"
 
 defaults:
   run:
@@ -15,15 +19,14 @@ defaults:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - name: Check out test infra
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Setup python
         uses: actions/setup-python@v2
 
-      - uses: nick-fields/retry@71062288b76e2b6214ebde0e673ce0de1755740a
+      - uses: nick-fields/retry@3e91a01664abd3c5cd539100d10d33b9c5b68482
         name: Setup dependencies
         with:
           shell: bash
@@ -33,8 +36,11 @@ jobs:
           command: |
             set -eux
             python3 -m pip install awscli
-
+      - name: Prepare package
+        run: |
+          make prepare
       - name: Deploy the lambda. (This only makes the lambda ready. Manual verification steps are still required to get it into prod because of the lack of automated testing here. Checkout aws/lambda/github-status-test/github-status-test/README.md to see how to get the deployed lambda to prod)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

@@ -7,13 +7,13 @@ inputs:
     description: which driver version to install
     required: false
     type: string
-    default: "515.76"
+    default: "535.54.03"   # From https://www.nvidia.com/en-us/drivers/unix
 
 runs:
   using: composite
   steps:
     - name: Install nvidia driver, nvidia-docker runtime, set GPU_FLAG
-      uses: nick-fields/retry@7d4a37704547a311dbb66ebdf5b23ec19374a767
+      uses: nick-fields/retry@3e91a01664abd3c5cd539100d10d33b9c5b68482
       env:
         DRIVER_VERSION: ${{ inputs.driver-version }}
       with:
@@ -42,8 +42,12 @@ runs:
           install_nvidia_docker2_ubuntu20() {
               (
                   set -x
-                  sudo apt-get install -y nvidia-docker2
-                  sudo systemctl restart docker
+                  # Install nvidia-driver package if not installed
+                  status="$(dpkg-query -W --showformat='${db:Status-Status}' nvidia-docker2 2>&1)"
+                  if [ ! $? = 0 ] || [ ! "$status" = installed ]; then
+                    sudo apt-get install -y nvidia-docker2
+                    sudo systemctl restart docker
+                  fi
               )
           }
 
@@ -142,7 +146,38 @@ runs:
 
                   (
                       set +e
+
                       nvidia-smi
+                      # NB: Annoyingly, nvidia-smi command returns successfully with return code 0 even in
+                      # the case where the driver has already crashed as it still can get the driver version
+                      # and some basic information like the bus ID.  However, the rest of the information
+                      # would be missing (ERR!), for example:
+                      #
+                      # +-----------------------------------------------------------------------------+
+                      # | NVIDIA-SMI 525.89.02    Driver Version: 525.89.02    CUDA Version: 12.0     |
+                      # |-------------------------------+----------------------+----------------------+
+                      # | GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+                      # | Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+                      # |                               |                      |               MIG M. |
+                      # |===============================+======================+======================|
+                      # |   0  ERR!                Off  | 00000000:00:1E.0 Off |                 ERR! |
+                      # |ERR!  ERR! ERR!    ERR! / ERR! |   4184MiB / 23028MiB |    ERR!      Default |
+                      # |                               |                      |                 ERR! |
+                      # +-------------------------------+----------------------+----------------------+
+                      #
+                      # +-----------------------------------------------------------------------------+
+                      # | Processes:                                                                  |
+                      # |  GPU   GI   CI        PID   Type   Process name                  GPU Memory |
+                      # |        ID   ID                                                   Usage      |
+                      # |=============================================================================|
+                      # +-----------------------------------------------------------------------------+
+                      #
+                      # This should be reported as a failure instead as it will guarantee to fail when
+                      # Docker tries to run with --gpus all
+                      #
+                      # So, the correct check here is to query one of the missing piece of info like
+                      # GPU name, so that the command can fail accordingly
+                      nvidia-smi --query-gpu=gpu_name --format=csv,noheader --id=0
                       NVIDIA_SMI_STATUS=$?
 
                       # Allowable exit statuses for nvidia-smi, see: https://github.com/NVIDIA/gpu-operator/issues/285
@@ -202,4 +237,4 @@ runs:
                   exit 1
                   ;;
           esac
-          echo "GPU_FLAG=--gpus all" >> "${GITHUB_ENV}"
+          echo "GPU_FLAG=--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all" >> "${GITHUB_ENV}"

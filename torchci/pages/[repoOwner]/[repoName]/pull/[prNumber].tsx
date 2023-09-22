@@ -27,7 +27,7 @@ function CommitInfo({
     }
   );
   if (error != null) {
-    return <div>Error occured</div>;
+    return <div>Error occurred</div>;
   }
 
   if (data === undefined) {
@@ -35,7 +35,15 @@ function CommitInfo({
   }
   const { commit, jobs } = data;
 
-  return <CommitStatus commit={commit} jobs={jobs} />;
+  return (
+    <CommitStatus
+      repoOwner={repoOwner}
+      repoName={repoName}
+      commit={commit}
+      jobs={jobs}
+      isCommitPage={false}
+    />
+  );
 }
 
 function CommitHeader({
@@ -58,7 +66,7 @@ function CommitHeader({
         value={selectedSha}
         onChange={(e) => {
           router.push(
-            `/${repoName}/${repoOwner}/pull/${pr}?sha=${e.target.value}`
+            `/${repoOwner}/${repoName}/pull/${pr}?sha=${e.target.value}`
           );
         }}
       >

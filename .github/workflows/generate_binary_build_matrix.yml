@@ -27,9 +27,13 @@ on:
         description: "Build with Cuda?"
         default: "enable"
         type: string
-      with-py311:
-        description: "Include Python 3.11"
-        default: "disable"
+      with-rocm:
+        description: "Build with Rocm?"
+        default: "enable"
+        type: string
+      with-cpu:
+        description: "Build with CPU?"
+        default: "enable"
         type: string
     outputs:
       matrix:
@@ -50,6 +54,7 @@ jobs:
         with:
           repository: ${{ inputs.test-infra-repository }}
           ref: ${{ inputs.test-infra-ref }}
+      - uses: ./.github/actions/set-channel
       - name: Generate test matrix
         id: generate
         env:
@@ -57,7 +62,11 @@ jobs:
           OS: ${{ inputs.os }}
           CHANNEL: ${{ inputs.channel }}
           WITH_CUDA: ${{ inputs.with-cuda }}
-          WITH_PY311: ${{ inputs.with-py311 }}
+          WITH_ROCM: ${{ inputs.with-rocm }}
+          WITH_CPU: ${{ inputs.with-cpu }}
+          # limit pull request builds to one version of python unless ciflow/binaries/all is applied to the workflow
+          # should not affect builds that are from events that are not the pull_request event
+          LIMIT_PR_BUILDS: ${{ github.event_name == 'pull_request' && !contains( github.event.pull_request.labels.*.name, 'ciflow/binaries/all') }}
         run: |
           set -eou pipefail
           MATRIX_BLOB="$(python3 tools/scripts/generate_binary_build_matrix.py)"

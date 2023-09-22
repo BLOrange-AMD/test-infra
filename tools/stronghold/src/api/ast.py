@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping, Sequence
 import os
 import pathlib
+from collections.abc import Mapping, Sequence
 
 import api
+import api.types
 
 
 def extract(path: pathlib.Path) -> Mapping[str, api.Parameters]:
@@ -44,14 +45,26 @@ def _function_def_to_parameters(node: ast.FunctionDef) -> api.Parameters:
     # Collect the position-only parameters.
     params = [
         api.Parameter(
-            name=arg.arg, position=i, keyword=False, required=i < num_required
+            name=arg.arg,
+            positional=True,
+            keyword=False,
+            required=i < num_required,
+            line=arg.lineno,
+            type_annotation=api.types.annotation_to_dataclass(arg.annotation),
         )
         for i, arg in enumerate(args.posonlyargs)
     ]
     # Collect the parameters that may be provided positionally or by
     # keyword.
     params += [
-        api.Parameter(name=arg.arg, position=i, keyword=True, required=i < num_required)
+        api.Parameter(
+            name=arg.arg,
+            positional=True,
+            keyword=True,
+            required=i < num_required,
+            line=arg.lineno,
+            type_annotation=api.types.annotation_to_dataclass(arg.annotation),
+        )
         for i, arg in enumerate(args.args, start=len(args.posonlyargs))
     ]
 
@@ -60,9 +73,11 @@ def _function_def_to_parameters(node: ast.FunctionDef) -> api.Parameters:
     params += [
         api.Parameter(
             name=arg.arg,
-            position=None,
+            positional=False,
             keyword=True,
             required=args.kw_defaults[i] is None,
+            line=arg.lineno,
+            type_annotation=api.types.annotation_to_dataclass(arg.annotation),
         )
         for i, arg in enumerate(args.kwonlyargs)
     ]

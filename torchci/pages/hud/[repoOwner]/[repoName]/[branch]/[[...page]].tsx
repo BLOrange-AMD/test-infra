@@ -9,9 +9,16 @@ import JobFilterInput from "components/JobFilterInput";
 import JobTooltip from "components/JobTooltip";
 import { LocalTimeHuman } from "components/TimeUtils";
 import TooltipTarget from "components/TooltipTarget";
-import { getGroupingData, groups } from "lib/JobClassifierUtil";
+import {
+  getGroupingData,
+  groups,
+  sortGroupNamesForHUD,
+  isPersistentGroup,
+  isUnstableGroup,
+} from "lib/JobClassifierUtil";
 import {
   formatHudUrlForRoute,
+  Highlight,
   HudData,
   HudParams,
   JobData,
@@ -22,34 +29,43 @@ import useHudData from "lib/useHudData";
 import useTableFilter from "lib/useTableFilter";
 import Head from "next/head";
 import { useRouter } from "next/router";
-import useGroupingPreference from "lib/useGroupingPreference";
 import React, { createContext, useContext, useEffect, useState } from "react";
 import PageSelector from "components/PageSelector";
 import useSWR from "swr";
-import { isFailedJob } from "lib/jobUtils";
+import {
+  isFailedJob,
+  isRerunDisabledTestsJob,
+  isUnstableJob,
+} from "lib/jobUtils";
 import { fetcher } from "lib/GeneralUtils";
+import {
+  useGroupingPreference,
+  usePreference,
+} from "lib/useGroupingPreference";
 
-export function JobCell({
-  sha,
-  job,
-}: {
-  sha: string;
-  job: JobData;
-}) {
+export function JobCell({ sha, job }: { sha: string; job: JobData }) {
   const [pinnedId, setPinnedId] = useContext(PinnedTooltipContext);
+  const style = pinnedId.name == job.name ? styles.highlight : "";
   return (
     <td onDoubleClick={() => window.open(job.htmlUrl)}>
       <TooltipTarget
-        id={`${sha}-${job.name}`}
         pinnedId={pinnedId}
         setPinnedId={setPinnedId}
         tooltipContent={<JobTooltip job={job} />}
+        sha={sha as string}
+        name={job.name as string}
       >
-        <JobConclusion
-          conclusion={job.conclusion}
-          failedPreviousRun={job.failedPreviousRun}
-          classified={job.failureAnnotation != null}
-        />
+        <div className={`${styles.center} ${style}`}>
+          <JobConclusion
+            conclusion={job.conclusion}
+            failedPreviousRun={job.failedPreviousRun}
+            classified={job.failureAnnotation != null}
+            warningOnly={
+              isFailedJob(job) &&
+              (isRerunDisabledTestsJob(job) || isUnstableJob(job))
+            }
+          />
+        </div>
       </TooltipTarget>
     </td>
   );
@@ -68,11 +84,19 @@ function HudRow({
   const params = packHudParams(router.query);
   const sha = rowData.sha;
 
-  const failedJobs = rowData.jobs.filter(isFailedJob);
-  const { repoOwner, repoName } = router.query;
+  const [pinnedId, setPinnedId] = useContext(PinnedTooltipContext);
+  const style = pinnedId.sha == sha ? styles.highlight : "";
+
+  function clickCommit(e: React.MouseEvent) {
+    if (pinnedId.name !== undefined || pinnedId.sha !== undefined) {
+      return;
+    }
+    e.stopPropagation();
+    setPinnedId({ sha: rowData.sha, name: undefined });
+  }
 
   return (
-    <tr>
+    <tr className={style} onClick={(e) => clickCommit(e)}>
       <td className={styles.jobMetadata}>
         <LocalTimeHuman timestamp={rowData.time} />
       </td>
@@ -94,7 +118,13 @@ function HudRow({
             href={`https://github.com/${params.repoOwner}/${params.repoName}/pull/${rowData.prNum}`}
           >
             {rowData.isForcedMerge ? (
-              <mark className={styles.forcedMergeWarning}>
+              <mark
+                className={
+                  rowData.isForcedMergeWithFailures
+                    ? styles.forcedMergeWithFailure
+                    : styles.forcedMerge
+                }
+              >
                 #{rowData.prNum}
               </mark>
             ) : (
@@ -142,7 +172,9 @@ function HudJobCells({
               numClassified++;
             }
           }
-          const failedJobs = rowData.groupedJobs?.get(name)?.jobs.filter(isFailedJob);
+          const failedJobs = rowData.groupedJobs
+            ?.get(name)
+            ?.jobs.filter(isFailedJob);
           return (
             <HudGroupedCell
               sha={rowData.sha}
@@ -156,13 +188,7 @@ function HudJobCells({
           );
         } else {
           const job = rowData.nameToJobs?.get(name);
-          return (
-            <JobCell
-              sha={rowData.sha}
-              key={name}
-              job={job!}
-            />
-          );
+          return <JobCell sha={rowData.sha} key={name} job={job!} />;
         }
       })}
     </>
@@ -201,6 +227,8 @@ function GroupFilterableHudTable({
   setExpandedGroups,
   useGrouping,
   setUseGrouping,
+  hideUnstable,
+  setHideUnstable,
 }: {
   params: HudParams;
   groupNameMapping: Map<string, string[]>;
@@ -210,6 +238,8 @@ function GroupFilterableHudTable({
   setExpandedGroups: React.Dispatch<React.SetStateAction<Set<string>>>;
   useGrouping: boolean;
   setUseGrouping: any;
+  hideUnstable: boolean;
+  setHideUnstable: any;
 }) {
   const { jobFilter, handleSubmit, handleInput, normalizedJobFilter } =
     useTableFilter(params);
@@ -227,6 +257,10 @@ function GroupFilterableHudTable({
       <GroupViewCheckBox
         useGrouping={useGrouping}
         setUseGrouping={setUseGrouping}
+      />
+      <UnstableCheckBox
+        hideUnstable={hideUnstable}
+        setHideUnstable={setHideUnstable}
       />
       <table className={styles.hudTable}>
         <GroupHudTableColumns
@@ -261,10 +295,40 @@ function GroupViewCheckBox({
           setUseGrouping(!useGrouping);
         }}
       >
-        <input type="checkbox" name="groupView" checked={useGrouping} />
+        <input
+          type="checkbox"
+          name="groupView"
+          checked={useGrouping}
+          onChange={() => {}}
+        />
         <label htmlFor="groupView"> Use grouped view</label>
       </div>
-      <br />
+    </>
+  );
+}
+
+function UnstableCheckBox({
+  hideUnstable,
+  setHideUnstable,
+}: {
+  hideUnstable: boolean;
+  setHideUnstable: any;
+}) {
+  return (
+    <>
+      <div
+        onClick={() => {
+          setHideUnstable(!hideUnstable);
+        }}
+      >
+        <input
+          type="checkbox"
+          name="hideUnstable"
+          checked={hideUnstable}
+          onChange={() => {}}
+        />
+        <label htmlFor="hideUnstable"> Hide unstable jobs</label>
+      </div>
     </>
   );
 }
@@ -335,8 +399,8 @@ function HudHeader({ params }: { params: HudParams }) {
   );
 }
 
-export const PinnedTooltipContext = createContext<[null | string, any]>([
-  null,
+export const PinnedTooltipContext = createContext<[Highlight, any]>([
+  { sha: undefined, name: undefined },
   null,
 ]);
 
@@ -351,14 +415,17 @@ export default function Hud() {
   // This state needs to be set up at this level because we want to capture all
   // clicks.
 
-  const [pinnedTooltip, setPinnedTooltip] = useState<string | null>(null);
+  const [pinnedTooltip, setPinnedTooltip] = useState<Highlight>({
+    sha: undefined,
+    name: undefined,
+  });
   function handleClick() {
-    setPinnedTooltip(null);
+    setPinnedTooltip({ sha: undefined, name: undefined });
   }
   useEffect(() => {
     document.addEventListener("keydown", (e) => {
       if (e.code === "Escape") {
-        setPinnedTooltip(null);
+        setPinnedTooltip({ sha: undefined, name: undefined });
       }
     });
   }, []);
@@ -410,8 +477,10 @@ function GroupedHudTable({
   const [useGrouping, setUseGrouping] = useGroupingPreference(
     params.nameFilter != null && params.nameFilter !== ""
   );
+  const [hideUnstable, setHideUnstable] = usePreference("hideUnstable");
+
   const groupNames = Array.from(groupNameMapping.keys());
-  let names = groupNames;
+  let names = sortGroupNamesForHUD(groupNames);
 
   if (useGrouping) {
     expandedGroups.forEach((group) => {
@@ -422,10 +491,18 @@ function GroupedHudTable({
         ...names.slice(nameInd + 1),
       ];
     });
+    if (hideUnstable) {
+      names = names.filter((name) => !isUnstableGroup(name));
+    }
   } else {
     names = [...data.jobNames];
     groups.forEach((group) => {
-      if (groupNames.includes(group.name) && group.persistent) {
+      if (
+        groupNames.includes(group.name) &&
+        (group.persistent || (isUnstableGroup(group.name) && hideUnstable))
+      ) {
+        // Add group name, take out all the jobs that belong to that group
+        // unless the group is expanded
         names.push(group.name);
         names = names.filter(
           (name) => !groupNameMapping.get(group.name)?.includes(name)
@@ -446,6 +523,8 @@ function GroupedHudTable({
       setExpandedGroups={setExpandedGroups}
       useGrouping={useGrouping}
       setUseGrouping={setUseGrouping}
+      hideUnstable={hideUnstable}
+      setHideUnstable={setHideUnstable}
     >
       <HudTableBody
         shaGrid={shaGrid}

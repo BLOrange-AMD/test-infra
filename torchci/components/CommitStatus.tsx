@@ -4,10 +4,16 @@ import { CommitData, JobData } from "lib/types";
 import WorkflowBox from "./WorkflowBox";
 import styles from "components/commit.module.css";
 import _ from "lodash";
-import { isFailedJob } from "lib/jobUtils";
+import {
+  isFailedJob,
+  isRerunDisabledTestsJob,
+  isUnstableJob,
+} from "lib/jobUtils";
 import { linkIt, UrlComponent, urlRegex } from "react-linkify-it";
 import { getConclusionSeverityForSorting } from "../lib/JobClassifierUtil";
 import useScrollTo from "lib/useScrollTo";
+import WorkflowDispatcher from "./WorkflowDispatcher";
+import { useSession } from "next-auth/react";
 
 function WorkflowsContainer({ jobs }: { jobs: JobData[] }) {
   useScrollTo();
@@ -47,12 +53,21 @@ function WorkflowsContainer({ jobs }: { jobs: JobData[] }) {
 }
 
 export default function CommitStatus({
+  repoOwner,
+  repoName,
   commit,
   jobs,
+  isCommitPage,
 }: {
+  repoOwner: string;
+  repoName: string;
   commit: CommitData;
   jobs: JobData[];
+  isCommitPage: boolean;
 }) {
+  const session = useSession();
+  const isAuthenticated = session.status === "authenticated";
+
   return (
     <>
       <VersionControlLinks
@@ -72,8 +87,22 @@ export default function CommitStatus({
       <FilteredJobList
         filterName="Failed jobs"
         jobs={jobs}
-        pred={isFailedJob}
+        pred={(job) =>
+          isFailedJob(job) &&
+          !isRerunDisabledTestsJob(job) &&
+          !isUnstableJob(job)
+        }
         showClassification
+      />
+      <FilteredJobList
+        filterName="Failed unstable jobs"
+        jobs={jobs}
+        pred={(job) => isFailedJob(job) && isUnstableJob(job)}
+      />
+      <FilteredJobList
+        filterName="Daily rerunning disabled jobs"
+        jobs={jobs}
+        pred={(job) => isFailedJob(job) && isRerunDisabledTestsJob(job)}
       />
       <FilteredJobList
         filterName="Pending jobs"
@@ -81,6 +110,15 @@ export default function CommitStatus({
         pred={(job) => job.conclusion === "pending"}
       />
       <WorkflowsContainer jobs={jobs} />
+      {isAuthenticated && isCommitPage && (
+        <WorkflowDispatcher
+          repoOwner={repoOwner}
+          repoName={repoName}
+          commit={commit}
+          jobs={jobs}
+          session={session.data}
+        />
+      )}
     </>
   );
 }

@@ -47,12 +47,16 @@ on:
         description: "Name of the actual python package that is imported"
         default: ""
         type: string
-      runner-type:
-        description: "Runner environment specified."
-        default: ""
-        type: string
       trigger-event:
         description: "Trigger Event in caller that determines whether or not to upload"
+        default: ""
+        type: string
+      cache-path:
+        description: "The path(s) on the runner to cache or restore. The path is relative to repository."
+        default: ""
+        type: string
+      cache-key:
+        description: "The key created when saving a cache and the key used to search for a cache."
         default: ""
         type: string
     secrets:
@@ -73,9 +77,11 @@ jobs:
       PACKAGE_TYPE: wheel
       REPOSITORY: ${{ inputs.repository }}
       REF: ${{ inputs.ref }}
+      CU_VERSION: ${{ matrix.desired_cuda }}
       UPLOAD_TO_BASE_BUCKET: ${{ matrix.upload_to_base_bucket }}
     name: ${{ matrix.build_name }}
-    runs-on: ${{ inputs.runner-type }}
+    runs-on: ${{ matrix.validation_runner }}
+    environment: ${{(inputs.trigger-event == 'push' || startsWith(github.event.ref, 'refs/tags/')) && 'pytorchbot-env' || ''}}
     defaults:
       run:
         shell: bash -l {0}
@@ -89,30 +95,36 @@ jobs:
           repository: ${{ inputs.test-infra-repository }}
           ref: ${{ inputs.test-infra-ref }}
           path: test-infra
+      - uses: ./test-infra/.github/actions/setup-ssh
+        name: Setup SSH
+        with:
+          github-secret: ${{ secrets.GITHUB_TOKEN }}
+          activate-with-label: false
+          instructions: "SSH with rdesktop using ssh -L 3389:localhost:3389 %%username%%@%%hostname%%"
+      - name: Add Conda scripts to GitHub path
+        run: |
+          echo "C:/Jenkins/Miniconda3/Scripts" >> $GITHUB_PATH
+      - uses: ./test-infra/.github/actions/set-channel
       - uses: ./test-infra/.github/actions/setup-binary-builds
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          setup-miniconda: true
+          setup-miniconda: false
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install torch dependency
         run: |
           source "${BUILD_ENV_FILE}"
           # shellcheck disable=SC2086
           ${CONDA_RUN} ${PIP_INSTALL_TORCH}
-      - name: Run pre-script
-        working-directory: ${{ inputs.repository }}
-        env:
-          PRE_SCRIPT: ${{ inputs.pre-script }}
+      - name: Run Pre-Script with Caching
         if: ${{ inputs.pre-script != '' }}
-        run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${PRE_SCRIPT} ]]; then
-            echo "::error::Specified pre-script file (${PRE_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${PRE_SCRIPT}"
-          fi
+        uses: ./test-infra/.github/actions/run-script-with-cache
+        with:
+          cache-path: ${{ inputs.cache-path }}
+          cache-key: ${{ inputs.cache-key }}
+          repository: ${{ inputs.repository  }}
+          script: ${{ inputs.pre-script }}
+          is_windows: 'enabled'
       - name: Build clean
         working-directory: ${{ inputs.repository }}
         run: |
@@ -125,6 +137,15 @@ jobs:
           BUILD_PARAMS: ${{ inputs.wheel-build-params }}
         run: |
           source "${BUILD_ENV_FILE}"
+
+          if [[ "$CU_VERSION" == "cpu" ]]; then
+          # CUDA and CPU are ABI compatible on the CPU-only parts, so strip
+          # in this case
+            export PYTORCH_VERSION="$(${CONDA_RUN} pip show torch | grep ^Version: | sed 's/Version:  *//' | sed 's/+.\+//')"
+          else
+            export PYTORCH_VERSION="$(${CONDA_RUN} pip show torch | grep ^Version: | sed 's/Version:  *//')"
+          fi
+
           if [[ -z "${ENV_SCRIPT}" ]]; then
             ${CONDA_RUN} python setup.py bdist_wheel
           else
@@ -135,25 +156,22 @@ jobs:
               ${CONDA_RUN} ${ENV_SCRIPT} python setup.py bdist_wheel ${BUILD_PARAMS}
             fi
           fi
+      - name: Run post-script
+        working-directory: ${{ inputs.repository }}
+        env:
+          POST_SCRIPT: ${{ inputs.post-script }}
+          ENV_SCRIPT: ${{ inputs.env-script }}
+        if: ${{ inputs.post-script != '' }}
+        run: |
+          set -euxo pipefail
+          source "${BUILD_ENV_FILE}"
+          ${CONDA_RUN} ${ENV_SCRIPT} ${POST_SCRIPT}
       - name: Upload wheel to GitHub
         continue-on-error: true
         uses: actions/upload-artifact@v3
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ inputs.repository }}/dist/
-      - name: Run post-script
-        working-directory: ${{ inputs.repository }}
-        env:
-          POST_SCRIPT: ${{ inputs.post-script }}
-        if: ${{ inputs.post-script != '' }}
-        run: |
-          source "${BUILD_ENV_FILE}"
-          if [[ ! -f ${POST_SCRIPT} ]]; then
-            echo "::error::Specified post-script file (${POST_SCRIPT}) not found, not going execute it"
-            exit 1
-          else
-            ${CONDA_RUN} bash "${POST_SCRIPT}"
-          fi
       - name: Smoke Test
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
@@ -168,11 +186,10 @@ jobs:
             ${CONDA_RUN} python -c "import ${PACKAGE_NAME}; print('package version is ', ${PACKAGE_NAME}.__version__)"
           else
             echo "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT} found"
-            export LD_LIBRARY_PATH="{LD_LIBRARY_PATH}:${{ inputs.repository }}/third_party/ffmpeg/lib"
             ${CONDA_RUN} python "${{ inputs.repository }}/${SMOKE_TEST_SCRIPT}"
           fi
       - name: Upload package to pytorch.org
-        if: ${{ inputs.trigger-event == 'push' }}
+        if: ${{ (inputs.trigger-event == 'push' && startsWith(github.event.ref, 'refs/heads/nightly')) || (env.CHANNEL == 'test' && startsWith(github.event.ref, 'refs/tags/')) }}
         shell: bash -l {0}
         working-directory: ${{ inputs.repository }}
         env:
@@ -185,6 +202,9 @@ jobs:
             # PYTORCH_S3_BUCKET_PATH derived from pkg-helpers
             ${CONDA_RUN} aws s3 cp "$pkg" "${PYTORCH_S3_BUCKET_PATH}" --acl public-read
           done
+      - uses: ./test-infra/.github/actions/teardown-windows
+        if: always()
+        name: Teardown Windows
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ inputs.repository }}-${{ github.event_name == 'workflow_dispatch' }}

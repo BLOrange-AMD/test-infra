@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import re
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Dict
 
-from github import Github, SelfHostedActionsRunner, PaginatedList
+from github import Github, PaginatedList, SelfHostedActionsRunner
 
 
 @dataclass
@@ -38,7 +38,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--token",
-        required=True,
         help="Github token to pull from (Can also pass GITHUB_TOKEN as an env variable)",
         type=str,
         default=os.getenv("GITHUB_TOKEN", ""),
